@@ -1,0 +1,80 @@
+name: phantom-arm-poc
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/poc.yml']
+
+jobs:
+  poc:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - name: Runner info
+        run: |
+          uname -m
+          nproc
+          ls -l /dev/kvm || echo "no kvm"
+          egrep -c '(vmx|svm)' /proc/cpuinfo || true
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          ls -l /dev/kvm || true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Fetch Phantom APK (Aurora anon token + apkeep)
+        run: |
+          set -e
+          curl -sL -o apkeep "https://github.com/EFForg/apkeep/releases/latest/download/apkeep-aarch64-unknown-linux-gnu"
+          chmod +x apkeep
+          curl -sL -A "com.aurora.store-4" "https://auroraoss.com/api/auth" -o disp.json
+          EMAIL=$(python3 -c "import json;print(json.load(open('disp.json'))['email'])")
+          AUTH=$(python3 -c "import json;print(json.load(open('disp.json'))['auth'])")
+          echo "email=$EMAIL"
+          ./apkeep -a app.phantom -d google-play -o split_apk=1 --email "$EMAIL" --auth-token "$AUTH" --accept-tos ./
+          echo "=== downloaded splits ==="
+          ls -la app.phantom/ || ls -la .
+          mkdir -p phantom_apks
+          cp app.phantom/*.apk phantom_apks/ 2>/dev/null || cp app.phantom.apk phantom_apks/
+          ls -la phantom_apks/
+
+      - name: Run Phantom on arm64 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: arm64-v8a
+          profile: pixel_6
+          ram-size: 4096M
+          disk-size: 6144M
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot
+          script: |
+            set +e
+            mkdir -p results
+            adb wait-for-device
+            echo "=== emulator abi ==="; adb shell getprop ro.product.cpu.abi | tee results/abi.txt
+            echo "=== install Phantom splits ==="
+            adb install-multiple -r --bypass-low-target-sdk-block phantom_apks/*.apk 2>&1 | tee results/install.txt
+            adb shell dumpsys package app.phantom | grep -E "versionName|primaryCpuAbi" | tee results/pkg.txt
+            echo "=== launch ==="
+            adb logcat -c
+            adb shell monkey -p app.phantom -c android.intent.category.LAUNCHER 1
+            sleep 25
+            echo "PID=$(adb shell pidof app.phantom | tr -d '\r')" | tee results/pid.txt
+            adb exec-out screencap -p > results/launch.png
+            adb logcat -d > results/logcat_full.txt 2>&1
+            grep -iE "SIGSEGV|FATAL|soloader|libreactnative|phantom" results/logcat_full.txt | tail -40 > results/logcat_phantom.txt
+            echo "=== RESULT ==="
+            if [ -n "$(adb shell pidof app.phantom | tr -d '\r')" ]; then echo "PHANTOM_RUNS=YES" | tee results/verdict.txt; else echo "PHANTOM_RUNS=NO" | tee results/verdict.txt; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: poc-results
+          path: results/
