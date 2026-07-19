@@ -27,50 +27,56 @@ jobs:
 
       - name: Setup adb + binder
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq adb
-          adb version
-          # try to provide binder devices for redroid
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo "modprobe binder_linux failed"
-          grep -i binder /proc/filesystems || echo "no binderfs"
-          ls -la /dev/binder /dev/hwbinder /dev/vndbinder 2>&1 || echo "no /dev/binder* (redroid may use binderfs)"
-
-      - name: Boot redroid arm64 (native)
-        run: |
-          set -x
-          mkdir -p $PWD/rd-data
-          docker run -itd --privileged --name redroid \
-            -v $PWD/rd-data:/data -p 5555:5555 \
-            redroid/redroid:14.0.0-latest androidboot.hardware=redroid
-          sleep 10
-          docker ps -a --filter name=redroid --format '{{.Status}}'
-          echo "=== initial redroid log ==="; docker logs redroid 2>&1 | tail -20
-          # wait for boot
-          adb connect localhost:5555 || true
-          BOOTED=no
-          for i in $(seq 1 60); do
-            adb connect localhost:5555 >/dev/null 2>&1
-            B=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            if [ "$B" = "1" ]; then echo "BOOTED after $((i*5))s"; BOOTED=yes; break; fi
-            if ! docker ps --filter name=redroid --format '{{.Names}}' | grep -q redroid; then echo "CONTAINER DIED"; docker logs redroid 2>&1 | tail -30; break; fi
-            sleep 5
-          done
-          echo "BOOTED=$BOOTED"
-          [ "$BOOTED" = "yes" ]
-
-      - name: Install Phantom + verify it runs (arm64 native)
-        run: |
           mkdir -p results
-          adb -s localhost:5555 shell getprop ro.product.cpu.abi | tee results/abi.txt
-          adb -s localhost:5555 install-multiple -r --bypass-low-target-sdk-block phantom_apks/*.apk 2>&1 | tee results/install.txt
-          adb -s localhost:5555 shell dumpsys package app.phantom | grep -E "versionName|primaryCpuAbi" | tee results/pkg.txt
-          adb -s localhost:5555 logcat -c
-          adb -s localhost:5555 shell monkey -p app.phantom -c android.intent.category.LAUNCHER 1
-          sleep 30
-          echo "PID=$(adb -s localhost:5555 shell pidof app.phantom | tr -d '\r')" | tee results/pid.txt
-          adb -s localhost:5555 exec-out screencap -p > results/launch.png || true
-          adb -s localhost:5555 logcat -d > results/logcat_full.txt 2>&1
-          grep -iE "SIGSEGV|FATAL|soloader|libreactnative|app.phantom|AndroidRuntime" results/logcat_full.txt | tail -40 > results/logcat_phantom.txt || true
-          if [ -n "$(adb -s localhost:5555 shell pidof app.phantom | tr -d '\r')" ]; then echo "PHANTOM_RUNS=YES" | tee results/verdict.txt; else echo "PHANTOM_RUNS=NO" | tee results/verdict.txt; fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq adb
+          adb version | head -1
+          echo "--- binder module ---" | tee results/binder.txt
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 | tee -a results/binder.txt || echo "modprobe failed" | tee -a results/binder.txt
+          echo "--- /proc/filesystems ---" | tee -a results/binder.txt
+          grep -i binder /proc/filesystems | tee -a results/binder.txt || echo "no binderfs" | tee -a results/binder.txt
+          echo "--- /dev/binder* ---" | tee -a results/binder.txt
+          ls -la /dev/binder /dev/hwbinder /dev/vndbinder 2>&1 | tee -a results/binder.txt || true
+          echo "--- kernel modules ---" | tee -a results/binder.txt
+          ls /lib/modules/$(uname -r)/kernel/drivers/android/ 2>&1 | tee -a results/binder.txt || echo "no android drivers" | tee -a results/binder.txt
+
+      - name: Boot redroid arm64 (native) + install Phantom
+        run: |
+          set +e
+          A(){ timeout 12 adb -s localhost:5555 "$@"; }
+          mkdir -p results $PWD/rd-data
+          docker run -itd --privileged --name redroid -v $PWD/rd-data:/data -p 5555:5555 redroid/redroid:14.0.0-latest androidboot.hardware=redroid 2>&1 | tee results/dockerrun.txt
+          sleep 12
+          docker ps -a --filter name=redroid --format '{{.Status}}' | tee results/container_status.txt
+          docker logs redroid > results/redroid_boot.log 2>&1
+          echo "=== redroid boot log (tail) ==="; tail -25 results/redroid_boot.log
+          # wait boot with per-call timeout
+          BOOTED=no
+          for i in $(seq 1 45); do
+            timeout 8 adb connect localhost:5555 >/dev/null 2>&1
+            B=$(A shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "iter $i boot=$B container=$(docker ps --filter name=redroid --format '{{.Names}}')"
+            if [ "$B" = "1" ]; then BOOTED=yes; break; fi
+            if ! docker ps --filter name=redroid --format '{{.Names}}' | grep -q redroid; then echo "CONTAINER DIED"; break; fi
+            sleep 6
+          done
+          docker logs redroid > results/redroid_boot.log 2>&1
+          echo "BOOTED=$BOOTED" | tee results/booted.txt
+          A shell getprop ro.product.cpu.abi | tee results/abi.txt
+          if [ "$BOOTED" = "yes" ]; then
+            A install-multiple -r --bypass-low-target-sdk-block phantom_apks/*.apk 2>&1 | tee results/install.txt
+            A shell dumpsys package app.phantom 2>/dev/null | grep -E "versionName|primaryCpuAbi" | tee results/pkg.txt
+            A logcat -c
+            A shell monkey -p app.phantom -c android.intent.category.LAUNCHER 1
+            sleep 30
+            echo "PID=$(A shell pidof app.phantom | tr -d '\r')" | tee results/pid.txt
+            A exec-out screencap -p > results/launch.png
+            A logcat -d > results/logcat_full.txt 2>&1
+            grep -iE "SIGSEGV|FATAL|soloader|libreactnative|app.phantom|AndroidRuntime" results/logcat_full.txt | tail -40 > results/logcat_phantom.txt
+            if [ -n "$(A shell pidof app.phantom | tr -d '\r')" ]; then echo "PHANTOM_RUNS=YES" | tee results/verdict.txt; else echo "PHANTOM_RUNS=NO" | tee results/verdict.txt; fi
+          else
+            echo "PHANTOM_RUNS=UNKNOWN (redroid did not boot)" | tee results/verdict.txt
+          fi
+          echo "step done"
 
       - uses: actions/upload-artifact@v4
         if: always()
