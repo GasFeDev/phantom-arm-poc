@@ -1,0 +1,2 @@
+/system/bin/sh: No controlling tty: open /dev/tty: No such device or address
+/system/bin/sh: warning: won't have full job control

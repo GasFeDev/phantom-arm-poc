@@ -1,0 +1,8 @@
+Unable to find image 'redroid/redroid:14.0.0-latest' locally
+14.0.0-latest: Pulling from redroid/redroid
+9c8dcfd35064: Pulling fs layer
+9c8dcfd35064: Download complete
+9c8dcfd35064: Pull complete
+Digest: sha256:a3e654caad74faed03cd5ead057a989e06f507778cda678e5d3b9772e0092f1c
+Status: Downloaded newer image for redroid/redroid:14.0.0-latest
+7c3baf2def295b08a5a2aa1f27812ccb6c85c99715e57af87dd95eb7e6f58d82

@@ -1,0 +1,30 @@
+name: cf-feasibility
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/cfcheck.yml']
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 12
+    steps:
+      - name: Cuttlefish feasibility
+        run: |
+          echo "=== arch/kernel ==="; uname -m; uname -r; nproc; free -h | head -2
+          echo "=== KVM ==="; ls -l /dev/kvm 2>&1; sudo sh -c 'test -w /dev/kvm && echo KVM_WRITABLE || echo KVM_NOT_WRITABLE'
+          echo "=== vhost / tun modules (cuttlefish needs) ==="
+          for m in vhost vhost_vsock vhost_net tun; do
+            if sudo modprobe $m 2>/dev/null; then echo "MODOK $m"; else echo "MODFAIL $m"; fi
+          done
+          echo "=== device nodes ==="; ls -l /dev/vhost-vsock /dev/vhost-net /dev/net/tun 2>&1
+          echo "=== kvm-ok ==="; sudo apt-get install -y -qq cpu-checker >/dev/null 2>&1; sudo kvm-ok 2>&1 || true
+          echo "=== nested caps ==="; ls /sys/module/kvm/parameters/ 2>&1 | head
+          echo "=== bridge/network tooling ==="; which brctl ip iptables 2>&1
+          echo "=== FEASIBILITY SUMMARY ==="
+          KVMW=$(sudo sh -c 'test -w /dev/kvm && echo yes || echo no')
+          VS=$(sudo modprobe vhost_vsock 2>/dev/null && echo yes || echo no)
+          VN=$(sudo modprobe vhost_net 2>/dev/null && echo yes || echo no)
+          TUN=$(sudo modprobe tun 2>/dev/null && echo yes || echo no)
+          echo "kvm_writable=$KVMW vhost_vsock=$VS vhost_net=$VN tun=$TUN"
+          if [ "$KVMW" = yes ] && [ "$VS" = yes ]; then echo "CUTTLEFISH_FEASIBLE=YES"; else echo "CUTTLEFISH_FEASIBLE=NO"; fi
