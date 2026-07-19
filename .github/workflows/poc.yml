@@ -28,20 +28,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Fetch Phantom APK (Aurora anon token + apkeep)
+      - name: Fetch Phantom APK (from release asset)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          curl -sL -o apkeep "https://github.com/EFForg/apkeep/releases/latest/download/apkeep-aarch64-unknown-linux-gnu"
-          chmod +x apkeep
-          curl -sL -A "com.aurora.store-4" "https://auroraoss.com/api/auth" -o disp.json
-          EMAIL=$(python3 -c "import json;print(json.load(open('disp.json'))['email'])")
-          AUTH=$(python3 -c "import json;print(json.load(open('disp.json'))['auth'])")
-          echo "email=$EMAIL"
-          ./apkeep -a app.phantom -d google-play -o split_apk=1 --email "$EMAIL" --auth-token "$AUTH" --accept-tos ./
-          echo "=== downloaded splits ==="
-          ls -la app.phantom/ || ls -la .
           mkdir -p phantom_apks
-          cp app.phantom/*.apk phantom_apks/ 2>/dev/null || cp app.phantom.apk phantom_apks/
+          gh release download apk-v26.21.0 --repo ${{ github.repository }} -D phantom_apks -p '*.apk'
           ls -la phantom_apks/
 
       - name: Run Phantom on arm64 emulator
